@@ -2,7 +2,6 @@
 Spiking RNN with C-T-C loops
 """
 
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -11,19 +10,21 @@ import seaborn as sns
 from matplotlib.gridspec import GridSpec
 import os
 
+# Parameters
 nb_basalganglia = 10  # Number of BG neurons (input layer)
 nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups) (hidden layer)
 nb_cortical_units = 3  # Number of cortical neurons (representing layer 5) (output layer)
-
 time_step = 1e-3
 nb_steps = 200
-
 dtype = torch.float
 device = torch.device("cpu")
+tau_mem = 10e-3  # Membrane time constant
+tau_syn = 5e-3  # Synaptic decay time constant
+alpha = float(np.exp(-time_step / tau_syn))
+beta = float(np.exp(-time_step / tau_mem))
 
 # Synthetic data
 batch_size = 256
-
 freq = 5  # Hz
 prob = freq * time_step
 mask = torch.rand((batch_size, nb_steps, nb_basalganglia), device=device, dtype=dtype)
@@ -38,28 +39,17 @@ plt.ylabel("Unit")
 sns.despine()
 plt.show()'''
 
-# Parameters from the RNN equations defined in the spytorch jupyter notebook
-tau_mem = 10e-3  # Membrane time constant
-tau_syn = 5e-3  # Synaptic decay time constant
-alpha = float(np.exp(-time_step / tau_syn))
-beta = float(np.exp(-time_step / tau_mem))
-
 weight_scale = 7 * (1.0 - beta)
-
 # Weights from BG to THA
 w1 = torch.zeros((nb_basalganglia, nb_thalamic_units), dtype=dtype, device=device)
-# torch.nn.init.normal(w1, mean=0.0, std=weight_scale/np.sqrt(nb_basalganglia))
-w1[0][0] = 1.0  # S1
-'''w1[1][1] = 1.0  # S2
+torch.nn.init.normal_(w1, mean=0.0, std=weight_scale / np.sqrt(nb_basalganglia))
+'''w1[0][0] = 1.0  # S1
+w1[1][1] = 1.0  # S2
 w1[5][5] = 1.0  # S5'''
-
 # Weights from THA to Cx
 w2 = torch.empty((nb_thalamic_units, nb_cortical_units), dtype=dtype, device=device, requires_grad=True)
 torch.nn.init.normal_(w2, mean=0.0, std=weight_scale / np.sqrt(nb_thalamic_units))
 
-'''h1 = torch.einsum("abc,cd->abd", (x_data, w1))'''  # Multiply input spikes with weight matrix
-# Why cant you just use torch.matmul? What is the difference
-h1 = torch.matmul(x_data, w1)
 
 # Heaviside function
 def spike_fn(x):  # Input is a tensor
@@ -68,35 +58,7 @@ def spike_fn(x):  # Input is a tensor
     return out  # Return the tensor x, filled with zeros and 1s in the positions of spikes
 
 
-# For each trial initialize synaptic currents and membrane potentials
-syn = torch.zeros((batch_size, nb_thalamic_units), dtype=dtype, device=device)
-mem = torch.zeros((batch_size, nb_thalamic_units), dtype=dtype, device=device)
-
-# Implement a loop to simulate neuron models over some time
-mem_rec = []  # Record membrane potentials
-spk_rec = []  # Record spikes
-
-for t in range(nb_steps):  # Loop through each discrete time step
-    mthr = mem - 1.0  # Sets each entry 'mthr' tensor to the respective (to position) membrane value (from mem tensor) - 1
-    out = spike_fn(mthr)  # 'out' = tensor filled with zeros, apart from 1's in the place where mthr > 0 (SPIKE)
-    rst = out.detach()  # Stops backprop through the reset
-
-    new_syn = alpha * syn + h1[:, t]
-    new_mem = (beta * mem + syn) * (1.0 - rst)
-
-    mem_rec.append(mem)
-    spk_rec.append(out)
-
-    mem = new_mem
-    syn = new_syn
-
-    print(mthr)
-    print(out)
-mem_rec = torch.stack(mem_rec, dim=1)
-spk_rec = torch.stack(spk_rec, dim=1)
-
-
-'''def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
+def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
     gs = GridSpec(*dim)
     if spk is not None:
         dat = 1.0 * mem
@@ -114,5 +76,61 @@ spk_rec = torch.stack(spk_rec, dim=1)
     plt.show()
 
 
-fig = plt.figure(dpi=100)
+'''fig = plt.figure(dpi=100)
 plot_voltage_traces(mem_rec, spk_rec)'''
+
+
+def run_snn(inputs):
+    # h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
+    h1 = torch.matmul(inputs, w1)  # Compute hidden layer
+    syn = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing
+    mem = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)
+
+    mem_rec = []
+    spk_rec = []
+
+    # Compute hidden layer activity
+    for t in range(nb_steps):
+        mthr = mem - 1.0
+        out = spike_fn(mthr)
+        rst = out.detach()  # We do not want to backprop through the reset
+
+        new_syn = alpha * syn + h1[:, t]  # I(t+1) = alpha*I(t) +
+        new_mem = (beta * mem + syn) * (
+                    1.0 - rst)  # U(t+1) = beta*U(t) + I(t) * (1 - reset) - Why is last term written like that???
+
+        mem_rec.append(mem)
+        spk_rec.append(out)
+
+        mem = new_mem
+        syn = new_syn
+
+    mem_rec = torch.stack(mem_rec, dim=1)
+    spk_rec = torch.stack(spk_rec, dim=1)
+    # Gives activity of the hidden layer as a result of the input layer, i.e., THA activity caused by BG inputs
+
+    # Readout layer
+    # h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
+    h2 = torch.matmul(spk_rec, w2)
+    flt = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)  # Like new synaptic currents right?
+    out = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
+    out_rec = [out]
+
+    for t in range(nb_steps):
+        new_flt = alpha * flt + h2[:, t]  # Add recurrent connection here
+        new_out = beta * out + flt
+
+        flt = new_flt
+        out = new_out
+
+        out_rec.append(out)
+
+    out_rec = torch.stack(out_rec, dim=1)
+    other_recs = [mem_rec, spk_rec]
+    return out_rec, other_recs
+
+
+out_rec, other_recs = run_snn(x_data)
+
+fig = plt.figure(dpi=100)
+plot_voltage_traces(out_rec)
