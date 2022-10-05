@@ -1,3 +1,8 @@
+"""
+Spiking RNN with C-T-C loops
+"""
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
@@ -6,9 +11,9 @@ import seaborn as sns
 from matplotlib.gridspec import GridSpec
 import os
 
-nb_basalganglia = 10  # Number of BG neurons
-nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups)
-nb_cortical_units = 3  # Number of cortical neurons (representing layer 5)
+nb_basalganglia = 10  # Number of BG neurons (input layer)
+nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups) (hidden layer)
+nb_cortical_units = 3  # Number of cortical neurons (representing layer 5) (output layer)
 
 time_step = 1e-3
 nb_steps = 200
@@ -52,26 +57,29 @@ w1[5][5] = 1.0  # S5'''
 w2 = torch.empty((nb_thalamic_units, nb_cortical_units), dtype=dtype, device=device, requires_grad=True)
 torch.nn.init.normal_(w2, mean=0.0, std=weight_scale / np.sqrt(nb_thalamic_units))
 
-h1 = torch.einsum("abc,cd->abd", (x_data, w1))  # Multiply input spikes with weight matrix
-
+'''h1 = torch.einsum("abc,cd->abd", (x_data, w1))'''  # Multiply input spikes with weight matrix
+# Why cant you just use torch.matmul? What is the difference
+h1 = torch.matmul(x_data, w1)
 
 # Heaviside function
-def spike_fn(x):
-    out = torch.zeros_like(x)
-    out[x > 0] = 1.0
-    return out
+def spike_fn(x):  # Input is a tensor
+    out = torch.zeros_like(x)  # Sets variable out to a tensor of zeros with same dimension as input tensor
+    out[x > 0] = 1.0  # For each entry out, if the corresponding entry in x is greater than 0, set that entry in x = 1
+    return out  # Return the tensor x, filled with zeros and 1s in the positions of spikes
 
 
+# For each trial initialize synaptic currents and membrane potentials
 syn = torch.zeros((batch_size, nb_thalamic_units), dtype=dtype, device=device)
 mem = torch.zeros((batch_size, nb_thalamic_units), dtype=dtype, device=device)
 
+# Implement a loop to simulate neuron models over some time
 mem_rec = []  # Record membrane potentials
 spk_rec = []  # Record spikes
 
-for t in range(nb_steps):
-    mthr = mem - 1.0
-    out = spike_fn(mthr)
-    rst = out.detach()
+for t in range(nb_steps):  # Loop through each discrete time step
+    mthr = mem - 1.0  # Sets each entry 'mthr' tensor to the respective (to position) membrane value (from mem tensor) - 1
+    out = spike_fn(mthr)  # 'out' = tensor filled with zeros, apart from 1's in the place where mthr > 0 (SPIKE)
+    rst = out.detach()  # Stops backprop through the reset
 
     new_syn = alpha * syn + h1[:, t]
     new_mem = (beta * mem + syn) * (1.0 - rst)
@@ -82,11 +90,13 @@ for t in range(nb_steps):
     mem = new_mem
     syn = new_syn
 
+    print(mthr)
+    print(out)
 mem_rec = torch.stack(mem_rec, dim=1)
 spk_rec = torch.stack(spk_rec, dim=1)
 
 
-def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
+'''def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
     gs = GridSpec(*dim)
     if spk is not None:
         dat = 1.0 * mem
@@ -105,4 +115,4 @@ def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
 
 
 fig = plt.figure(dpi=100)
-plot_voltage_traces(mem_rec, spk_rec)
+plot_voltage_traces(mem_rec, spk_rec)'''
