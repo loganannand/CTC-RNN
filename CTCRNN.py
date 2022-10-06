@@ -10,6 +10,20 @@ import seaborn as sns
 from matplotlib.gridspec import GridSpec
 import os
 
+
+def a(x):
+    o = torch.zeros_like(x)
+    o[x > 0] = 1.0
+    return o
+
+
+x = torch.tensor([0.1, -3.0, 0.2, -0.22])
+y = a(x)
+print(y)
+z = torch.rand([5])
+print(z)
+print(a(z))
+
 # Parameters
 nb_basalganglia = 10  # Number of BG neurons (input layer)
 nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups) (hidden layer)
@@ -35,10 +49,10 @@ x_data[mask < prob] = 1.0
 # Sine wave data for regression training
 xlim = nb_steps
 x = np.arange(0, xlim, time_step)
-y = np.sin(0.05*x)
+y = np.sin(0.05 * x) * 35 + 15
 # Format this data into a tensor
 data = np.array(list(zip(x, y)))
-tensor_data = torch.from_numpy(data)
+tensor_sine_data = torch.from_numpy(data)
 
 # Visualise synthetic data
 '''data_id = 0
@@ -68,6 +82,7 @@ def spike_fn(x):  # Input is a tensor
     out[x > thr] = spk  # For each entry out, if the corresponding entry in x is greater than 0, set that entry in x = 1
     return out  # Return the tensor x, filled with zeros and 1s in the positions of spikes
 
+
 def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
     gs = GridSpec(*dim)  # Grid layout to place subplots within a figure
     if spk is not None:
@@ -87,29 +102,35 @@ def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
 
 
 def run_snn(inputs):
+    """
+    Defines the SNN, iterates through the time steps and updates the dynamics at each step
+    :param inputs: Tensor
+    :return:
+    """
     # h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
     h1 = torch.matmul(inputs, w1)  # Compute hidden layer
-    syn = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing
-    mem = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)
-
-    mem_rec = []
-    spk_rec = []
+    syn = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing synaptic current
+    mem = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing membrane potential
+    mem_rec = []  # List to record membrane potentials at each time step for each neuron in hidden layer
+    spk_rec = []  # List to record spikes at each time step for each neuron in hidden layer
+    # Check if this is right^?^^?
 
     # Compute hidden layer activity
     for t in range(nb_steps):
         mthr = mem - 1.0  # Sets 'mthr' tensor = (initially) zeros mem tensor - 1.0 = tensor of all -1s initially
-        out = spike_fn(mthr)  # Runs that tensor through spike function
+        # What is the purpose of this mthr tensor?
+        out = spike_fn(mthr)  # Returns a tensor that spike function
         rst = out.detach()  # We do not want to backprop through the reset
 
         new_syn = alpha * syn + h1[:, t]  # I(t+1) = alpha*I(t) + (?)
         new_mem = (beta * mem + syn) * (1.0 - rst)  # U(t+1) = beta*U(t) + I(t) * (1 - reset)
         # whenever there is an output spike (=1), rst = 1 => the whole thing gets reset to 0 (resting potential)
 
-        mem_rec.append(mem)
-        spk_rec.append(out)
+        mem_rec.append(mem)  # Add U(t) at each step for each neuron?
+        spk_rec.append(out)  #
 
-        mem = new_mem
-        syn = new_syn
+        mem = new_mem  # Updates time step, t = t+1, for next iteration (for U(t) here)
+        syn = new_syn  # Same as above (but for I(t) here)
 
     mem_rec = torch.stack(mem_rec, dim=1)
     spk_rec = torch.stack(spk_rec, dim=1)
@@ -117,7 +138,7 @@ def run_snn(inputs):
 
     # Output layer - Represents L5 for now
     # h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
-    h2 = torch.matmul(spk_rec, w2)
+    h2 = torch.matmul(spk_rec, w2)  # why are we putting spk_rec as input for output layer?
     flt = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)  # Like new synaptic currents right?
     out = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
     out_rec = [out]
@@ -136,8 +157,53 @@ def run_snn(inputs):
     return out_rec, other_recs
 
 
+# out_rec, other_recs = run_snn(x_data)
 
-out_rec, other_recs = run_snn(x_data)
+'''fig = plt.figure(dpi=100)
+plot_voltage_traces(out_rec)'''
 
-fig = plt.figure(dpi=100)
-plot_voltage_traces(out_rec)
+
+# Introducing surrogate gradients for training and setting this function = previous spike_fn(x) function
+class SurrGradSpike(torch.autograd.Function):
+    """
+    Here we implement our spiking nonlinearity which also implements
+    the surrogate gradient. By subclassing torch.autograd.Function,
+    we will be able to use all of PyTorch's autograd functionality.
+    Here we use the normalized negative part of a fast sigmoid
+    as this was done in Zenke & Ganguli (2018).
+    """
+
+    scale = 100.0  # controls steepness of surrogate gradient
+
+    @staticmethod
+    def forward(ctx, input):
+        """
+        In the forward pass we compute a step function of the input Tensor
+        and return it. ctx is a context object that we use to stash information which
+        we need to later backpropagate our error signals. To achieve this we use the
+        ctx.save_for_backward method.
+        """
+        ctx.save_for_backward(input)
+        out = torch.zeros_like(input)
+        out[input > 0] = 1.0
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        In the backward pass we receive a Tensor we need to compute the
+        surrogate gradient of the loss with respect to the input.
+        Here we use the normalized negative part of a fast sigmoid
+        as this was done in Zenke & Ganguli (2018).
+        """
+        input, = ctx.saved_tensors
+        grad_input = grad_output.clone()
+        grad = grad_input / (SurrGradSpike.scale * torch.abs(input) + 1.0) ** 2
+        return grad
+
+
+# here we overwrite our naive spike function by the "SurrGradSpike" nonlinearity which implements a surrogate gradient
+spike_fn = SurrGradSpike.apply
+
+params = [w2]  # Does this account for the recurrent connectivity between hidden and output layers? Since
+# the recurrence is only written into the equations not the weights
