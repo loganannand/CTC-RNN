@@ -27,9 +27,12 @@ beta = float(np.exp(-time_step / tau_mem))
 batch_size = 256
 freq = 5  # Hz
 prob = freq * time_step
+torch.manual_seed(1729)
 mask = torch.rand((batch_size, nb_steps, nb_basalganglia), device=device, dtype=dtype)
 x_data = torch.zeros((batch_size, nb_steps, nb_basalganglia), device=device, dtype=dtype, requires_grad=False)
 x_data[mask < prob] = 1.0
+
+
 
 # Visualise synthetic data
 '''data_id = 0
@@ -53,8 +56,10 @@ torch.nn.init.normal_(w2, mean=0.0, std=weight_scale / np.sqrt(nb_thalamic_units
 
 # Heaviside function
 def spike_fn(x):  # Input is a tensor
+    thr = 0
+    spk = 1.0
     out = torch.zeros_like(x)  # Sets variable out to a tensor of zeros with same dimension as input tensor
-    out[x > 0] = 1.0  # For each entry out, if the corresponding entry in x is greater than 0, set that entry in x = 1
+    out[x > thr] = spk  # For each entry out, if the corresponding entry in x is greater than 0, set that entry in x = 1
     return out  # Return the tensor x, filled with zeros and 1s in the positions of spikes
 
 
@@ -79,7 +84,6 @@ def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
 '''fig = plt.figure(dpi=100)
 plot_voltage_traces(mem_rec, spk_rec)'''
 
-
 def run_snn(inputs):
     # h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
     h1 = torch.matmul(inputs, w1)  # Compute hidden layer
@@ -96,8 +100,8 @@ def run_snn(inputs):
         rst = out.detach()  # We do not want to backprop through the reset
 
         new_syn = alpha * syn + h1[:, t]  # I(t+1) = alpha*I(t) +
-        new_mem = (beta * mem + syn) * (
-                    1.0 - rst)  # U(t+1) = beta*U(t) + I(t) * (1 - reset) - Why is last term written like that???
+        new_mem = (beta * mem + syn) * (1.0 - rst)  # U(t+1) = beta*U(t) + I(t) * (1 - reset)
+        # whenever there is an output spike (=1), rst = 1 => the whole thing gets reset to 0 (resting potential)
 
         mem_rec.append(mem)
         spk_rec.append(out)
@@ -109,7 +113,7 @@ def run_snn(inputs):
     spk_rec = torch.stack(spk_rec, dim=1)
     # Gives activity of the hidden layer as a result of the input layer, i.e., THA activity caused by BG inputs
 
-    # Readout layer
+    # Output layer - Represents L5 for now
     # h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
     h2 = torch.matmul(spk_rec, w2)
     flt = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)  # Like new synaptic currents right?
