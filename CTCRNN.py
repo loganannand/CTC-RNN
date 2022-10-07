@@ -10,20 +10,6 @@ import seaborn as sns
 from matplotlib.gridspec import GridSpec
 import os
 
-
-def a(x):
-    o = torch.zeros_like(x)
-    o[x > 0] = 1.0
-    return o
-
-
-x = torch.tensor([0.1, -3.0, 0.2, -0.22])
-y = a(x)
-print(y)
-z = torch.rand([5])
-print(z)
-print(a(z))
-
 # Parameters
 nb_basalganglia = 10  # Number of BG neurons (input layer)
 nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups) (hidden layer)
@@ -107,8 +93,8 @@ def run_snn(inputs):
     :param inputs: Tensor
     :return:
     """
-    # h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
-    h1 = torch.matmul(inputs, w1)  # Compute hidden layer
+    h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
+    # h1 = torch.matmul(inputs, w1)  # Compute hidden layer
     syn = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing synaptic current
     mem = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing membrane potential
     mem_rec = []  # List to record membrane potentials at each time step for each neuron in hidden layer
@@ -122,7 +108,7 @@ def run_snn(inputs):
         out = spike_fn(mthr)  # Returns a tensor that spike function
         rst = out.detach()  # We do not want to backprop through the reset
 
-        new_syn = alpha * syn + h1[:, t]  # I(t+1) = alpha*I(t) + (?)
+        new_syn = alpha * syn + h1[:, t]  # I(t+1) = alpha*I(t) + input =
         new_mem = (beta * mem + syn) * (1.0 - rst)  # U(t+1) = beta*U(t) + I(t) * (1 - reset)
         # whenever there is an output spike (=1), rst = 1 => the whole thing gets reset to 0 (resting potential)
 
@@ -134,11 +120,37 @@ def run_snn(inputs):
 
     mem_rec = torch.stack(mem_rec, dim=1)
     spk_rec = torch.stack(spk_rec, dim=1)
-    # Gives activity of the hidden layer as a result of the input layer, i.e., THA activity caused by BG inputs
 
-    # Output layer - Represents L5 for now
-    # h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
-    h2 = torch.matmul(spk_rec, w2)  # why are we putting spk_rec as input for output layer?
+    ############# Spiking output layer #############
+
+    h2 = torch.matmul(spk_rec, w2)
+    syn2 = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
+    mem2 = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
+
+    mem2_rec = []
+    spk2_rec = []
+    for t in range(nb_steps):
+        mthr2 = mem2 - 1.0
+        out2 = spike_fn(mthr2)
+        rst2 = out2.detach()
+
+        new_syn2 = alpha * syn2 + h2[:,t]  # I(t+1) = alpha*I(t) + input =
+        new_mem2 = (beta * mem2 + syn2) * (1.0 - rst2)
+
+        mem2_rec.append(mem2)
+        spk2_rec.append(out2)
+
+        mem2 = new_mem2
+        syn2 = new_syn2
+
+    mem2_rec = torch.stack(mem2_rec, dim=1)
+    spk2_rec = torch.stack(spk2_rec, dim=1)
+
+    return mem2_rec, spk2_rec
+
+    # Non-spiking output layer
+'''    h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
+    # h2 = torch.matmul(spk_rec, w2)  # why are we putting spk_rec as input for output layer?
     flt = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)  # Like new synaptic currents right?
     out = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
     out_rec = [out]
@@ -155,12 +167,20 @@ def run_snn(inputs):
     out_rec = torch.stack(out_rec, dim=1)
     other_recs = [mem_rec, spk_rec]
     return out_rec, other_recs
+    
+out_rec, other_recs = run_snn(x_data)
+
+fig = plt.figure(dpi=100)
+plot_voltage_traces(out_rec)
+'''
 
 
-# out_rec, other_recs = run_snn(x_data)
 
-'''fig = plt.figure(dpi=100)
-plot_voltage_traces(out_rec)'''
+
+mem2_rec, spk2_rec = run_snn(x_data)
+
+fig = plt.figure(dpi=100)
+plot_voltage_traces(mem2_rec, spk2_rec)
 
 
 # Introducing surrogate gradients for training and setting this function = previous spike_fn(x) function
