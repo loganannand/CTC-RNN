@@ -1,5 +1,6 @@
 """
 Spiking RNN with C-T-C loops
+
 """
 
 import numpy as np
