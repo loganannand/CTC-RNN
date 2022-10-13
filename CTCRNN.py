@@ -14,9 +14,14 @@ import os
 # Parameters
 nb_basalganglia = 10  # Number of BG neurons (input layer)
 nb_thalamic_units = 10  # Number of thalamic neurons (try to group them in 5s = 6 groups) (hidden layer)
-nb_cortical_units = 10  # Number of cortical neurons (representing layer 5) (output layer)
+nb_cortical_units = 3  # Number of cortical neurons in layer 5
+nb_l23_units = 3  # Number of cortical neurons in layer 2/3
 time_step = 1e-3
 nb_steps = 100
+"""
+spk2_rec data = tensor within tensors, the inner tensor is comprised of tensors again, with number of rows = number of 
+integration steps set, and number of rows = number of output nodes (neurons). 
+"""
 dtype = torch.float
 device = torch.device("cpu")
 tau_mem = 10e-3  # Membrane time constant
@@ -32,6 +37,7 @@ torch.manual_seed(1729)
 mask = torch.rand((batch_size, nb_steps, nb_basalganglia), device=device, dtype=dtype)
 x_data = torch.zeros((batch_size, nb_steps, nb_basalganglia), device=device, dtype=dtype, requires_grad=False)
 x_data[mask < prob] = 1.0
+
 
 # Sine wave data for regression training
 xlim = nb_steps
@@ -60,6 +66,10 @@ w1[5][5] = 1.0  # S5'''
 w2 = torch.empty((nb_thalamic_units, nb_cortical_units), dtype=dtype, device=device, requires_grad=True)
 torch.nn.init.normal_(w2, mean=0.0, std=weight_scale / np.sqrt(nb_thalamic_units))
 
+# Weights from layer 5 to 2/3
+w5_23 = torch.empty((nb_thalamic_units, nb_cortical_units), dtype=dtype, device=device, requires_grad=True)
+torch.nn.init.normal_(w5_23, mean=0.0, std=weight_scale / np.sqrt(nb_thalamic_units))
+
 
 # Heaviside function
 def spike_fn(x):  # Input is a tensor
@@ -71,9 +81,16 @@ def spike_fn(x):  # Input is a tensor
 
 
 def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
+    """
+    :param mem: Tensor of membrane potentials (shape?)
+    :param spk: No spikes ?
+    :param dim: Dimension of the plots
+    :param spike_height: Peak amplitude of each spike
+    :return: Membrane potentials and spikes of output neurons (right?)
+    """
     gs = GridSpec(*dim)  # Grid layout to place subplots within a figure
     if spk is not None:
-        dat = mem * 1.0
+        dat = mem * 1.0  # tensor - why multiply by 1.0?
         dat[spk > 0.0] = spike_height
         dat = dat.detach().cpu().numpy()
     else:
@@ -91,11 +108,11 @@ def plot_voltage_traces(mem, spk=None, dim=(3, 5), spike_height=5):
 def run_snn(inputs):
     """
     Defines the SNN, iterates through the time steps and updates the dynamics at each step
-    :param inputs: Tensor
-    :return:
+    :param inputs: Tensor of input data
+    :return: tensors of membrane potentials and spike records
     """
-    h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
-    # h1 = torch.matmul(inputs, w1)  # Compute hidden layer
+    # h1 = torch.einsum("abc,cd->abd", (inputs, w1))  # Computing hidden layer, could probably use torch.matmul?
+    h1 = torch.matmul(inputs, w1)  # Compute hidden layer (THA units)
     syn = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing synaptic current
     mem = torch.zeros((batch_size, nb_thalamic_units), device=device, dtype=dtype)  # Initializing membrane potential
     mem_rec = []  # List to record membrane potentials at each time step for each neuron in hidden layer
@@ -123,19 +140,19 @@ def run_snn(inputs):
     spk_rec = torch.stack(spk_rec, dim=1)
 
     ############# Spiking output layer #############
-
-    h2 = torch.matmul(spk_rec, w2)
+    h2 = torch.matmul(spk_rec, w2)  # h2 = cortical layer 5
     syn2 = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
     mem2 = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)
 
     mem2_rec = []
     spk2_rec = []
+
     for t in range(nb_steps):
         mthr2 = mem2 - 1.0
         out2 = spike_fn(mthr2)
         rst2 = out2.detach()
 
-        new_syn2 = alpha * syn2 + h2[:,t]  # I(t+1) = alpha*I(t) + input =
+        new_syn2 = alpha * syn2 + h2[:, t]
         new_mem2 = (beta * mem2 + syn2) * (1.0 - rst2)
 
         mem2_rec.append(mem2)
@@ -149,7 +166,9 @@ def run_snn(inputs):
 
     return mem2_rec, spk2_rec
 
-    # Non-spiking output layer
+    ############# Non-spiking output layer #############
+
+
 '''    h2 = torch.einsum("abc,cd->abd", (spk_rec, w2))  # Computes read out layer = h2????
     # h2 = torch.matmul(spk_rec, w2)  # why are we putting spk_rec as input for output layer?
     flt = torch.zeros((batch_size, nb_cortical_units), device=device, dtype=dtype)  # Like new synaptic currents right?
@@ -175,19 +194,27 @@ fig = plt.figure(dpi=100)
 plot_voltage_traces(out_rec)
 '''
 
-
-
-
 mem2_rec, spk2_rec = run_snn(x_data)
 
-fig = plt.figure(dpi=100)
-plot_voltage_traces(mem2_rec, spk2_rec)
+'''fig = plt.figure(dpi=100)
+plot_voltage_traces(mem2_rec, spk2_rec)'''
+
+
+spikes = []
+for i in spk2_rec:
+    for j in i:
+        for k in j:
+            if k == 1:
+                spikes.append(k)
+
+
+# Pretty sure that iterates through the entire spk2_rec tensor and pulls out total number of spikes over the entire simulation
 
 
 # Introducing surrogate gradients for training and setting this function = previous spike_fn(x) function
 class SurrGradSpike(torch.autograd.Function):
     """
-    Here we implement our spiking nonlinearity which also implements
+    Here we implement our spiking non-linearity which also implements
     the surrogate gradient. By subclassing torch.autograd.Function,
     we will be able to use all of PyTorch's autograd functionality.
     Here we use the normalized negative part of a fast sigmoid
@@ -223,7 +250,7 @@ class SurrGradSpike(torch.autograd.Function):
         return grad
 
 
-# here we overwrite our naive spike function by the "SurrGradSpike" nonlinearity which implements a surrogate gradient
+# here we overwrite our naive spike function by the "SurrGradSpike" non-linearity which implements a surrogate gradient
 spike_fn = SurrGradSpike.apply
 
 params = [w2]  # Does this account for the recurrent connectivity between hidden and output layers? Since
