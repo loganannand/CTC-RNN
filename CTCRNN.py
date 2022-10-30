@@ -2,6 +2,8 @@
 Spiking RNN with C-T-C loops
 
 """
+"""
+"""
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -196,8 +198,8 @@ plot_voltage_traces(out_rec)
 
 mem2_rec, spk2_rec = run_snn(x_data)
 
-'''fig = plt.figure(dpi=100)
-plot_voltage_traces(mem2_rec, spk2_rec)'''
+fig = plt.figure(dpi=100)
+plot_voltage_traces(mem2_rec, spk2_rec)
 
 
 spikes = []

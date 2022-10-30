@@ -1,93 +1,77 @@
-
 import torch
-import numpy as np
+import torch.nn as nn
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
+import numpy as np
+
+# Parameters
+time_step = 1e-3  # 1 ms = 0.001 s
+nb_steps = 200
+time = time_step * nb_steps  # 0.2 s
+nb_l23_neurons = 10
+nb_l5_neurons = 10
 
 dtype = torch.float
 device = torch.device("cpu")
 
-nb_bg_units = 5
-nb_tha_units = 5
-time_step = 1e-3
-nb_steps = 100
-tau_mem = 10e-3  # Membrane time constant
-tau_syn = 5e-3  # Synaptic decay time constant
+tau_mem = 10e-3  # membrane time constant - MIGHT NEED TO CHANGE VALUE
+tau_syn = 5e-3  # synaptic decay time constant - MIGHT NEED TO CHANGE VALUE
+
 alpha = float(np.exp(-time_step / tau_syn))
 beta = float(np.exp(-time_step / tau_mem))
 
-# Synthetic data
-'''freq = 5  # Hz
-prob = freq * time_step
-torch.manual_seed(1542)
-mask = torch.rand((nb_steps, nb_bg_units), device=device, dtype=dtype)
-x_data = torch.zeros((nb_steps, nb_bg_units), device=device, dtype=dtype, requires_grad=False)
-x_data[mask < prob] = 1.0'''
 
-x_data = torch.empty((nb_steps, nb_bg_units), dtype=dtype, device=device)
-torch.nn.init.normal_(x_data, mean=0.0, std=0.025)
-
-####### FFN #######
-Jtbg = torch.zeros((nb_bg_units, nb_tha_units), dtype=dtype, device=device)
-torch.nn.init.normal_(Jtbg, mean=0.0, std=0.025)
-# Selection of motif mu:
-# Jtbg[0][0] = 1.0
-tha_layer = torch.matmul(x_data, Jtbg)
-
-thr = 0
-spk = 1.0
-
-'''
-def spike_fn(x):
-    out = torch.zeros_like(x)
-    out[x > thr] = spk
-    return out
+def spike_fn(x):  # Input is a tensor
+    thr = 0
+    spk = 1.0
+    out = torch.zeros_like(x)  # Sets variable out to a tensor of zeros with same dimension as input tensor
+    out[x > thr] = spk  # For each entry out, if the corresponding entry in x is greater than 0, set that entry in x = 1
+    return out  # Return the tensor x, filled with zeros and 1s in the positions of spikes
 
 
-I = torch.zeros((batch_size, nb_tha_units), dtype=dtype, device=device)
-U = torch.zeros((batch_size, nb_tha_units), dtype=dtype, device=device)
+# Weight matrices
+Ji_23 = torch.empty((nb_l23_neurons, nb_l23_neurons), dtype=dtype, device=device)  # input -> l23 weights
+J23_5 = torch.empty((nb_l23_neurons, nb_l5_neurons), dtype=dtype, device=device)  # l23 -> l5 weights
 
-spk_rec = []
-U_rec = []
+def run_snn(inputs):
+    # define layer 2/3 neurons
+    layer_23 = torch.matmul(inputs, Ji_23)
 
-for t in range(nb_steps):
-    memthresh = U - spk
-    out = spike_fn(memthresh)
-    reset = out.detach()
+    # initialize synapse and membrane values for layer 2/3, i.e., I(t=0) and U(t=0), respectively
+    l23_syn = torch.zeros((nb_l23_neurons, nb_l23_neurons), device=device, dtype=dtype)
+    l23_mem = torch.zeros((nb_l23_neurons, nb_l23_neurons), device=device, dtype=dtype)
 
-    new_I = alpha * I + tha_layer[:, t]
-    new_U = (beta * U + I) * (spk - reset)
+    # record membrane potential and spikes in layer 2/3
+    l23_mem_rec = []
+    l23_spk_rec = []
 
-    U_rec.append(U)
-    spk_rec.append(out)
+    # Compute layer 2/3 activity
+    for t in range(nb_steps):
+        mthr = mem - 1.0  # Sets 'mthr' tensor = (initially) zeros mem tensor - 1.0 = tensor of all -1s initially
+        # What is the purpose of this mthr tensor?
+        out = spike_fn(mthr)  # Returns a tensor from the spike function
+        rst = out.detach()  # We do not want to backprop through the reset
 
-    U = new_U
-    I = new_I
+        new_l23_syn = alpha * l23_syn + layer_23[:, t]  # not sure if that indexing is correct???
+        new_l23_mem = (beta * l23_mem + l23_syn) * (1.0 - rst)
 
-U_rec = torch.stack(U_rec, dim=1)
-spk_rec = torch.stack(spk_rec, dim=1)
+        l23_mem_rec.append(l23_mem)
+        l23_spk_rec.append(out)
+
+        l23_mem = new_l23_mem
+        l23_syn = new_l23_syn
+
+    l23_mem_rec = torch.stack(l23_mem_rec, dim=1)
+    l23_spk_rec = torch.stack(l23_spk_rec, dim=1)
+
+    # Compute layer 5 activity
+    l5 = torch.matmul(l23_spk_rec, J23_5)  # layer 5
+
+    # initialize synapse and membrane values for layer 5, i.e., I(t=0) and U(t=0), respectively
+    l5_syn = torch.zeros((nb_l23_neurons, nb_l5_neurons), device=device, dtype=dtype)
+    l5_mem = torch.zeros((nb_l23_neurons, nb_l5_neurons), device=device, dtype=dtype)
+
+    out_rec = [out]
+    for t in range(nb_steps):
+        new_l5_syn = alpha * l5_syn + l5[:, t] # not sure if that indexing is correct???
 
 
-def plot_voltage_traces(U, spk=None, dim=(3, 5), spike_height=5):
-    gs = GridSpec(*dim)  # Grid layout to place subplots within a figure
-    if spk is not None:
-        dat = U * 1.0  # tensor - why multiply by 1.0?
-        dat[spk > 0.0] = spike_height
-        dat = dat.detach().cpu().numpy()
-    else:
-        dat = U.detach().cpu().numpy()
-    for i in range(np.prod(dim)):
-        if i == 0:
-            a0 = ax = plt.subplot(gs[i])
-        else:
-            ax = plt.subplot(gs[i], sharey=a0)
-        ax.plot(dat[i])
-        ax.axis("off")
-    plt.show()
-
-
-fig = plt.figure(dpi=100)
-plot_voltage_traces(U_rec, spk_rec)
-
-####### RNN #######
-'''
